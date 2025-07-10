@@ -1,2 +1,2 @@
-# naic_search_chatbot
-naic_search_chatbot
+# NAIC Search Chatbot
+A Flask-based chatbot that performs semantic search over NAIC content.
