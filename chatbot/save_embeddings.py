@@ -1,5 +1,5 @@
-import sys
 import os
+import sys
 import numpy as np
 import openai
 import hashlib
@@ -9,53 +9,54 @@ from chatbot.live_search import crawl_site
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 EMBEDDING_MODEL = "text-embedding-ada-002"
-
-OUTPUT_DIR = "naic_embeddings"
+OUTPUT_DIR = "naic_embeddings_chunked"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-def get_openai_embedding(text):
-    """Embed a single document using OpenAI."""
-    text = text.strip() or "empty"
-    response = openai.embeddings.create(input=[text], model=EMBEDDING_MODEL)
-    return np.array(response.data[0].embedding, dtype=np.float32)
+CHUNK_SIZE = 500
+CHUNK_OVERLAP = 50
+
+def chunk_text(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
+    words = text.split()
+    chunks = []
+    i = 0
+    while i < len(words):
+        chunk = words[i:i+chunk_size]
+        chunks.append(" ".join(chunk))
+        i += chunk_size - overlap
+    return chunks
+
+def get_openai_embeddings(texts):
+    response = openai.embeddings.create(input=texts, model=EMBEDDING_MODEL)
+    sorted_data = sorted(response.data, key=lambda x: x.index)
+    return [np.array(item.embedding, dtype=np.float32) for item in sorted_data]
 
 def sanitize_filename(url):
-    """Generate a unique filename using a hash of the URL."""
     return hashlib.md5(url.encode()).hexdigest()
 
-def save_embedding_for_each_document(pairs):
-    """Create and save embeddings per document."""
-    mapping = []
+def save_embeddings_for_documents(pairs):
+    metadata_path = os.path.join(OUTPUT_DIR, "chunks_metadata.txt")
+    all_meta = []
 
-    for i, (text, url) in enumerate(pairs):
+    for text, url in pairs:
         if not text.strip():
-            print(f"[{i}] Skipping empty content from {url}")
             continue
-
+        chunks = chunk_text(text)
         try:
-            print(f"[{i}] Embedding: {url}")
-            embedding = get_openai_embedding(text)
-            filename = sanitize_filename(url) + ".npy"
-            filepath = os.path.join(OUTPUT_DIR, filename)
-            np.save(filepath, embedding)
-            mapping.append((filename, url))
+            embeddings = get_openai_embeddings(chunks)
+            base_name = sanitize_filename(url)
+            for i, (chunk_text, emb) in enumerate(zip(chunks, embeddings)):
+                chunk_id = f"{base_name}_chunk{i}"
+                npy_path = os.path.join(OUTPUT_DIR, f"{chunk_id}.npy")
+                np.save(npy_path, emb)
+                preview = chunk_text.replace("\n", " ")[:1000]
+                all_meta.append(f"{chunk_id}\t{url}\t{preview}")
         except Exception as e:
-            print(f"[{i}] Failed for {url}: {e}")
+            print(f"Error for {url}: {e}")
 
-    # Save URL → file mapping
-    with open(os.path.join(OUTPUT_DIR, "mapping.txt"), "w", encoding="utf-8") as f:
-        for filename, url in mapping:
-            f.write(f"{filename}\t{url}\n")
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(all_meta))
+    print(f"Saved {len(all_meta)} chunks.")
 
-    print(f"Done. Saved {len(mapping)} embeddings.")
-
-# Main logic
 if __name__ == "__main__":
-    # This should return [(text1, url1), (text2, url2), ...]
     texts, urls = crawl_site()
-    document_pairs = list(zip(texts, urls))
-
-    if not document_pairs:
-        raise ValueError("crawl_site() returned no documents.")
-
-    save_embedding_for_each_document(document_pairs)
+    save_embeddings_for_documents(zip(texts, urls))
